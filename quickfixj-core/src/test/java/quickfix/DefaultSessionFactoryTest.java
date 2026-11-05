@@ -36,6 +36,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
 
 public class DefaultSessionFactoryTest {
@@ -60,6 +61,21 @@ public class DefaultSessionFactoryTest {
     @Test
     public void testMinimalSettings() throws Exception {
         factory.create(sessionID, settings);
+    }
+
+    @Test
+    public void testAllowUnknownEnumValuesSetting() throws Exception {
+        settings.setString(sessionID, Session.SETTING_ALLOW_UNKNOWN_ENUM_VALUES, "Y");
+        try (Session session = factory.create(sessionID, settings)) {
+            assertTrue(session.getValidationSettings().isAllowUnknownEnumValues());
+        }
+    }
+
+    @Test
+    public void testAllowUnknownEnumValuesDefaultsToFalse() throws Exception {
+        try (Session session = factory.create(sessionID, settings)) {
+            assertFalse(session.getValidationSettings().isAllowUnknownEnumValues());
+        }
     }
 
     @Test
@@ -97,6 +113,8 @@ public class DefaultSessionFactoryTest {
         settings.setString(sessionID, Session.SETTING_DEFAULT_APPL_VER_ID, "FIX.4.2");
         settings.setString(sessionID, Session.SETTING_APP_DATA_DICTIONARY, "FIX42.xml");
         settings.setString(sessionID, Session.SETTING_APP_DATA_DICTIONARY + "." + FixVersions.BEGINSTRING_FIX40, "FIX40.xml");
+        settings.setString(sessionID, Session.SETTING_ALLOW_UNKNOWN_MSG_FIELDS, "Y");
+        settings.setString(sessionID, Session.SETTING_VALIDATE_UNORDERED_GROUP_FIELDS, "N");
 
         try (Session session = factory.create(sessionID, settings)) {
 
@@ -108,6 +126,37 @@ public class DefaultSessionFactoryTest {
                     is(notNullValue()));
             assertThat(provider.getApplicationDataDictionary(new ApplVerID(ApplVerID.FIX40)),
                     is(notNullValue()));
+            assertTrue(session.getValidationSettings().isAllowUnknownMessageFields());
+            assertFalse(session.getValidationSettings().isCheckUnorderedGroupFields());
+        }
+    }
+
+    /**
+     * Tests that validation settings are applied when no explicit AppDataDictionary is defined.
+     * QFJ-981
+     */
+    @Test
+    public void testFixtDataDictionaryConfigurationWithDefaultAppDataDictionary() throws Exception {
+        SessionID sessionID = new SessionID(FixVersions.BEGINSTRING_FIXT11, "SENDER", "TARGET");
+        setUpDefaultSettings(sessionID);
+        settings.setBool(sessionID, Session.SETTING_USE_DATA_DICTIONARY, true);
+        settings.setString(sessionID, Session.SETTING_TRANSPORT_DATA_DICTIONARY, "FIXT11.xml");
+        settings.setString(sessionID, Session.SETTING_DEFAULT_APPL_VER_ID, "FIX.4.2");
+        settings.setString(sessionID, Session.SETTING_ALLOW_UNKNOWN_MSG_FIELDS, "Y");
+        settings.setString(sessionID, Session.SETTING_VALIDATE_UNORDERED_GROUP_FIELDS, "N");
+
+        try (Session session = factory.create(sessionID, settings)) {
+
+            DataDictionaryProvider provider = session.getDataDictionaryProvider();
+            assertThat(provider.getSessionDataDictionary(sessionID.getBeginString()),
+                    is(notNullValue()));
+
+            assertThat(provider.getApplicationDataDictionary(new ApplVerID(ApplVerID.FIX42)),
+                    is(notNullValue()));
+            assertThat(provider.getApplicationDataDictionary(new ApplVerID(ApplVerID.FIX40)),
+                    is(notNullValue()));
+            assertTrue(session.getValidationSettings().isAllowUnknownMessageFields());
+            assertFalse(session.getValidationSettings().isCheckUnorderedGroupFields());
         }
     }
 

@@ -149,9 +149,10 @@ public class Application extends quickfix.MessageCracker implements quickfix.App
             sendMessage(sessionID, accept);
 
             if (isOrderExecutable(order, price)) {
+                int lastShares = (int) orderQty.getValue();
                 quickfix.fix40.ExecutionReport fill = new quickfix.fix40.ExecutionReport(genOrderID(), genExecID(),
                         new ExecTransType(ExecTransType.NEW), new OrdStatus(OrdStatus.FILLED), order.getSymbol(), order
-                                .getSide(), orderQty, new LastShares(orderQty.getValue()), new LastPx(price.getValue()),
+                                .getSide(), orderQty, new LastShares(lastShares), new LastPx(price.getValue()),
                         new CumQty(orderQty.getValue()), new AvgPx(price.getValue()));
 
                 fill.set(order.getClOrdID());
@@ -206,7 +207,7 @@ public class Application extends quickfix.MessageCracker implements quickfix.App
             if (dataDictionaryProvider != null) {
                 try {
                     dataDictionaryProvider.getApplicationDataDictionary(
-                            getApplVerID(session, message)).validate(message, true);
+                            getApplVerID(session, message)).validate(message, true, session.getValidationSettings());
                 } catch (Exception e) {
                     LogUtil.logThrowable(sessionID, "Outgoing message failed validation: "
                             + e.getMessage(), e);
@@ -238,7 +239,7 @@ public class Application extends quickfix.MessageCracker implements quickfix.App
         Price price = getPrice(order);
 
         quickfix.fix41.ExecutionReport accept = new quickfix.fix41.ExecutionReport(genOrderID(), genExecID(),
-                new ExecTransType(ExecTransType.NEW), new ExecType(ExecType.FILL), new OrdStatus(OrdStatus.NEW), order
+                new ExecTransType(ExecTransType.NEW), new ExecType(ExecType.NEW), new OrdStatus(OrdStatus.NEW), order
                         .getSymbol(), order.getSide(), orderQty, new LastShares(0), new LastPx(0), new LeavesQty(0),
                 new CumQty(0), new AvgPx(0));
 
@@ -246,10 +247,11 @@ public class Application extends quickfix.MessageCracker implements quickfix.App
         sendMessage(sessionID, accept);
 
         if (isOrderExecutable(order, price)) {
+            int lastShares = (int) orderQty.getValue();
             quickfix.fix41.ExecutionReport executionReport = new quickfix.fix41.ExecutionReport(genOrderID(),
                     genExecID(), new ExecTransType(ExecTransType.NEW), new ExecType(ExecType.FILL), new OrdStatus(
-                            OrdStatus.FILLED), order.getSymbol(), order.getSide(), orderQty, new LastShares(orderQty
-                            .getValue()), new LastPx(price.getValue()), new LeavesQty(0), new CumQty(orderQty
+                            OrdStatus.FILLED), order.getSymbol(), order.getSide(), orderQty, new LastShares(lastShares),
+                    new LastPx(price.getValue()), new LeavesQty(0), new CumQty(orderQty
                             .getValue()), new AvgPx(price.getValue()));
 
             executionReport.set(order.getClOrdID());
@@ -270,13 +272,14 @@ public class Application extends quickfix.MessageCracker implements quickfix.App
         Price price = getPrice(order);
 
         quickfix.fix42.ExecutionReport accept = new quickfix.fix42.ExecutionReport(genOrderID(), genExecID(),
-                new ExecTransType(ExecTransType.NEW), new ExecType(ExecType.FILL), new OrdStatus(OrdStatus.NEW), order
+                new ExecTransType(ExecTransType.NEW), new ExecType(ExecType.NEW), new OrdStatus(OrdStatus.NEW), order
                         .getSymbol(), order.getSide(), new LeavesQty(0), new CumQty(0), new AvgPx(0));
 
         accept.set(order.getClOrdID());
         sendMessage(sessionID, accept);
 
         if (isOrderExecutable(order, price)) {
+            int lastShares = (int) orderQty.getValue();
             quickfix.fix42.ExecutionReport executionReport = new quickfix.fix42.ExecutionReport(genOrderID(),
                     genExecID(), new ExecTransType(ExecTransType.NEW), new ExecType(ExecType.FILL), new OrdStatus(
                             OrdStatus.FILLED), order.getSymbol(), order.getSide(), new LeavesQty(0), new CumQty(
@@ -284,7 +287,7 @@ public class Application extends quickfix.MessageCracker implements quickfix.App
 
             executionReport.set(order.getClOrdID());
             executionReport.set(orderQty);
-            executionReport.set(new LastShares(orderQty.getValue()));
+            executionReport.set(new LastShares(lastShares));
             executionReport.set(new LastPx(price.getValue()));
 
             sendMessage(sessionID, executionReport);

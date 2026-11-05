@@ -23,12 +23,14 @@ import org.apache.mina.core.buffer.IoBuffer;
 import org.apache.mina.core.buffer.SimpleBufferAllocator;
 import org.apache.mina.core.service.IoAcceptor;
 import org.apache.mina.filter.codec.ProtocolCodecFilter;
+import org.apache.mina.filter.ssl.SslFilter;
 import quickfix.Acceptor;
 import quickfix.Application;
 import quickfix.ConfigError;
 import quickfix.DefaultSessionFactory;
 import quickfix.FieldConvertError;
 import quickfix.LogFactory;
+import quickfix.LogUtil;
 import quickfix.MessageFactory;
 import quickfix.MessageStoreFactory;
 import quickfix.RuntimeError;
@@ -39,13 +41,15 @@ import quickfix.SessionID;
 import quickfix.SessionSettings;
 import quickfix.mina.CompositeIoFilterChainBuilder;
 import quickfix.mina.EventHandlingStrategy;
+import quickfix.mina.HostResolutionStrategy;
 import quickfix.mina.NetworkingOptions;
 import quickfix.mina.ProtocolFactory;
 import quickfix.mina.SessionConnector;
 import quickfix.mina.message.FIXProtocolCodecFactory;
+import quickfix.mina.ssl.AcceptorSslFilter;
 import quickfix.mina.ssl.SSLConfig;
 import quickfix.mina.ssl.SSLContextFactory;
-import quickfix.mina.ssl.SSLFilter;
+import quickfix.mina.ssl.SSLContextProvider;
 import quickfix.mina.ssl.SSLSupport;
 
 import javax.net.ssl.SSLContext;
@@ -57,6 +61,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -68,27 +73,41 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
     private final SessionFactory sessionFactory;
     private final Map<SocketAddress, AcceptorSocketDescriptor> socketDescriptorForAddress = new HashMap<>();
     private final ConcurrentMap<AcceptorSocketDescriptor, IoAcceptor> ioAcceptors = new ConcurrentHashMap<>();
+    private final SSLContextProvider sslContextProvider;
 
     protected AbstractSocketAcceptor(SessionSettings settings, SessionFactory sessionFactory)
             throws ConfigError {
+        this(settings, sessionFactory, SSLContextFactory::getInstance);
+    }
+
+    protected AbstractSocketAcceptor(SessionSettings settings, SessionFactory sessionFactory,
+                                     SSLContextProvider sslContextProvider) throws ConfigError {
         super(settings, sessionFactory);
         IoBuffer.setAllocator(new SimpleBufferAllocator());
         IoBuffer.setUseDirectBuffer(false);
         this.sessionFactory = sessionFactory;
+        this.sslContextProvider = Objects.requireNonNull(sslContextProvider, "sslContextProvider");
     }
 
     protected AbstractSocketAcceptor(Application application,
-            MessageStoreFactory messageStoreFactory, SessionSettings settings,
-            MessageFactory messageFactory) throws ConfigError {
+                                     MessageStoreFactory messageStoreFactory, SessionSettings settings,
+                                     MessageFactory messageFactory) throws ConfigError {
         this(application, messageStoreFactory, settings, new ScreenLogFactory(settings),
                 messageFactory);
     }
 
     protected AbstractSocketAcceptor(Application application,
-            MessageStoreFactory messageStoreFactory, SessionSettings settings,
-            LogFactory logFactory, MessageFactory messageFactory) throws ConfigError {
+                                     MessageStoreFactory messageStoreFactory, SessionSettings settings,
+                                     LogFactory logFactory, MessageFactory messageFactory) throws ConfigError {
+        this(application, messageStoreFactory, settings, logFactory, messageFactory, SSLContextFactory::getInstance);
+    }
+
+    protected AbstractSocketAcceptor(Application application,
+                                     MessageStoreFactory messageStoreFactory, SessionSettings settings,
+                                     LogFactory logFactory, MessageFactory messageFactory,
+                                     SSLContextProvider sslContextProvider) throws ConfigError {
         this(settings, new DefaultSessionFactory(application, messageStoreFactory, logFactory,
-                messageFactory));
+                messageFactory), sslContextProvider);
     }
 
     // TODO SYNC Does this method really need synchronization?
@@ -117,10 +136,11 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
                 ioAcceptor.bind(socketDescriptor.getAddress());
                 log.info("Listening for connections at {} for session(s) {}", address, socketDescriptor.getAcceptedSessions().keySet());
             } catch (IOException | GeneralSecurityException | ConfigError e) {
+                // we cannot log for a specific session here
                 if (continueInitOnError) {
                     log.warn("error during session initialization for session(s) {}, continuing...", socketDescriptor.getAcceptedSessions().keySet(), e);
                 } else {
-                    log.error("Cannot start acceptor session for {}, error: {}", address, e);
+                    log.error("Cannot start acceptor session for {}", address, e);
                     throw new RuntimeError(e);
                 }
             }
@@ -128,14 +148,18 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
     }
 
     private void installSSL(AcceptorSocketDescriptor descriptor,
-            CompositeIoFilterChainBuilder ioFilterChainBuilder) throws GeneralSecurityException {
+                            CompositeIoFilterChainBuilder ioFilterChainBuilder) throws GeneralSecurityException {
         log.info("Installing SSL filter for {}", descriptor.getAddress());
         SSLConfig sslConfig = descriptor.getSslConfig();
-        SSLContext sslContext = SSLContextFactory.getInstance(sslConfig);
-        SSLFilter sslFilter = new SSLFilter(sslContext);
-        sslFilter.setUseClientMode(false);
+        SSLContext sslContext = sslContextProvider.getSSLContext(sslConfig);
+        if (sslContext == null) {
+            throw new GeneralSecurityException("SSLContextProvider returned null for " + descriptor.getAddress());
+        }
+        HostResolutionStrategy hostResolutionStrategy = HostResolutionStrategy.fromReverseDnsEnabled(
+                descriptor.isReverseDnsEnabled());
+        SslFilter sslFilter = new AcceptorSslFilter(sslContext, hostResolutionStrategy);
         sslFilter.setNeedClientAuth(sslConfig.isNeedClientAuth());
-        sslFilter.setCipherSuites(sslConfig.getEnabledCipherSuites() != null ? sslConfig.getEnabledCipherSuites()
+        sslFilter.setEnabledCipherSuites(sslConfig.getEnabledCipherSuites() != null ? sslConfig.getEnabledCipherSuites()
                 : SSLSupport.getDefaultCipherSuites(sslContext));
         sslFilter.setEnabledProtocols(sslConfig.getEnabledProtocols() != null ? sslConfig.getEnabledProtocols()
                 : SSLSupport.getSupportedProtocols(sslContext));
@@ -184,10 +208,10 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
             if (acceptTransportType == ProtocolFactory.SOCKET) {
                 useSSL = true;
                 sslConfig = SSLSupport.getSslConfig(getSettings(), sessionID);
-            } else {
-                log.warn("SSL will not be enabled for transport type={}, session={}", acceptTransportType, sessionID);
             }
         }
+        boolean reverseDnsEnabled = getSettings().getBoolOrDefault(sessionID,
+                SSLSupport.SETTING_REVERSE_DNS_ENABLED, true);
 
         int acceptPort = (int) settings.getLong(sessionID, Acceptor.SETTING_SOCKET_ACCEPT_PORT);
 
@@ -202,11 +226,12 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
         // Check for cached descriptor
         AcceptorSocketDescriptor descriptor = socketDescriptorForAddress.get(acceptorAddress);
         if (descriptor != null) {
-            if (descriptor.isUseSSL() != useSSL || !equals(sslConfig, descriptor.getSslConfig())) {
+            if (descriptor.isUseSSL() != useSSL || !equals(sslConfig, descriptor.getSslConfig())
+                    || descriptor.isReverseDnsEnabled() != reverseDnsEnabled) {
                 throw new ConfigError("Conflicting configurations of acceptor socket: " + acceptorAddress);
             }
         } else {
-            descriptor = new AcceptorSocketDescriptor(acceptorAddress, useSSL, sslConfig);
+            descriptor = new AcceptorSocketDescriptor(acceptorAddress, useSSL, sslConfig, reverseDnsEnabled);
             socketDescriptorForAddress.put(acceptorAddress, descriptor);
         }
 
@@ -214,6 +239,11 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
             Session session = sessionFactory.create(sessionID, settings);
             descriptor.acceptSession(session);
             allSessions.put(sessionID, session);
+        }
+
+        if (acceptTransportType != ProtocolFactory.SOCKET
+                && getSettings().getBoolOrDefault(sessionID, SSLSupport.SETTING_USE_SSL, false)) {
+            LogUtil.logWarning(sessionID, "SSL is only supported for transport type SOCKET and will not be enabled for transport type=" + acceptTransportType);
         }
     }
 
@@ -223,7 +253,7 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
 
     private void createSessions(SessionSettings settings, boolean continueInitOnError) throws ConfigError {
         Map<SessionID, Session> allSessions = new HashMap<>();
-        for (Iterator<SessionID> i = settings.sectionIterator(); i.hasNext();) {
+        for (Iterator<SessionID> i = settings.sectionIterator(); i.hasNext(); ) {
             SessionID sessionID = i.next();
             try {
                 String connectionType = null;
@@ -246,7 +276,7 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
                 }
             } catch (Throwable t) {
                 if (continueInitOnError) {
-                    log.warn("error during session initialization for {}, continuing...", sessionID, t);
+                    LogUtil.logWarning(sessionID, "error during session initialization, continuing...", t);
                 } else {
                     throw t instanceof ConfigError ? (ConfigError) t : new ConfigError(
                             "error during session initialization", t);
@@ -276,12 +306,15 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
         private final SocketAddress address;
         private final boolean useSSL;
         private final SSLConfig sslConfig;
+        private final boolean reverseDnsEnabled;
         private final Map<SessionID, Session> acceptedSessions = new HashMap<>();
 
-        public AcceptorSocketDescriptor(SocketAddress address, boolean useSSL, SSLConfig sslConfig) {
+        public AcceptorSocketDescriptor(SocketAddress address, boolean useSSL, SSLConfig sslConfig,
+                boolean reverseDnsEnabled) {
             this.address = address;
             this.useSSL = useSSL;
             this.sslConfig = sslConfig;
+            this.reverseDnsEnabled = reverseDnsEnabled;
         }
 
         public void acceptSession(Session session) {
@@ -302,6 +335,10 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
 
         public SSLConfig getSslConfig() {
             return sslConfig;
+        }
+
+        public boolean isReverseDnsEnabled() {
+            return reverseDnsEnabled;
         }
     }
 
@@ -330,6 +367,7 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
             this.acceptorSessions = acceptorSessions;
         }
 
+        @Override
         public Session getSession(SessionID sessionID, SessionConnector connector) {
             return acceptorSessions.get(sessionID);
         }
@@ -340,9 +378,9 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
         return ehs == null ? 0 : ehs.getQueueSize();
     }
 
-    protected abstract EventHandlingStrategy getEventHandlingStrategy() ;
+    protected abstract EventHandlingStrategy getEventHandlingStrategy();
 
-    private class DefaultAcceptorSessionProvider implements AcceptorSessionProvider {
+    private static class DefaultAcceptorSessionProvider implements AcceptorSessionProvider {
 
         private final Map<SessionID, Session> acceptorSessions;
 
@@ -350,6 +388,7 @@ public abstract class AbstractSocketAcceptor extends SessionConnector implements
             this.acceptorSessions = acceptorSessions;
         }
 
+        @Override
         public Session getSession(SessionID sessionID, SessionConnector ignored) {
             Session session = acceptorSessions.get(sessionID);
             if (session == null) {

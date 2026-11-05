@@ -1,0 +1,24 @@
+# Please see the documentation for all configuration options:
+# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+
+version: 2
+updates:
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    ignore:
+      - dependency-name: "org.junit.jupiter:junit-jupiter-engine"
+        versions: [">=6.a0", "<7"]
+      - dependency-name: "org.junit.jupiter:junit-jupiter-params"
+        versions: [">=6.a0", "<7"]
+      - dependency-name: "org.junit.vintage:junit-vintage-engine"
+        versions: [">=6.a0", "<7"]
+      - dependency-name: "org.mockito:mockito-core"
+        versions: [">=5.a", "<6"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10

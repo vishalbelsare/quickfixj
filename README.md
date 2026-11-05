@@ -2,14 +2,13 @@ QuickFIX/J
 ==========
 [![Java CI](https://github.com/quickfix-j/quickfixj/actions/workflows/maven.yml/badge.svg)](https://github.com/quickfix-j/quickfixj/actions/workflows/maven.yml)
 [![CodeQL](https://github.com/quickfix-j/quickfixj/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/quickfix-j/quickfixj/actions/workflows/codeql-analysis.yml)
-[![Maven Central](https://maven-badges.herokuapp.com/maven-central/org.quickfixj/quickfixj-core/badge.svg)](https://maven-badges.herokuapp.com/maven-central/org.quickfixj/quickfixj-core)
-[![Total alerts](https://img.shields.io/lgtm/alerts/g/quickfix-j/quickfixj.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/quickfix-j/quickfixj/alerts/)
-[![Language grade: Java](https://img.shields.io/lgtm/grade/java/g/quickfix-j/quickfixj.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/quickfix-j/quickfixj/context:java)
+[![Sonatype Central](https://maven-badges.sml.io/sonatype-central/org.quickfixj/quickfixj-core/badge.svg)](https://maven-badges.sml.io/sonatype-central/org.quickfixj/quickfixj-core)
+[![codecov](https://codecov.io/gh/quickfix-j/quickfixj/graph/badge.svg?token=svUBx8TTzQ)](https://codecov.io/gh/quickfix-j/quickfixj)
 
 This is the official QuickFIX/J project repository.
 
 ## intro
-QuickFIX/J is a full featured messaging engine for the FIX protocol (FIX versions 4.0 - 5.0SP2/FIXT1.1).
+QuickFIX/J is a full featured messaging engine for the FIX protocol (FIX versions 4.0 - 5.0SP2/FIXT1.1 and FIXLatest).
 It is a 100% Java open source implementation of the popular C++ QuickFIX engine.
 
 The Financial Information eXchange (FIX) protocol is a messaging standard developed
@@ -44,17 +43,17 @@ Pull requests are always welcome! Best is if you added a unit test to show that 
 
 Fastest: clone the repo and issue the following command.
 ```
-$ mvn clean package -Dmaven.javadoc.skip=true -DskipTests -PskipBundlePlugin
+$ mvnw clean package -Dmaven.javadoc.skip=true -DskipTests -PskipBundlePlugin,minimal-fix-latest
 ```
 
 Slower: if you only want to skip the acceptance test suite:
 ```
-$ mvn clean package -Dmaven.javadoc.skip=true -DskipAT=true -PskipBundlePlugin
+$ mvnw clean package -Dmaven.javadoc.skip=true -DskipAT=true -PskipBundlePlugin,minimal-fix-latest
 ```
 
 Slow: if you want to run all tests:
 ```
-$ mvn clean package -Dmaven.javadoc.skip=true -PskipBundlePlugin
+$ mvnw clean package -Dmaven.javadoc.skip=true -PskipBundlePlugin,minimal-fix-latest
 ```
 NB: If you want to use the resulting JARs in an OSGi environment you'll have to omit the `-PskipBundlePlugin` option.
 
@@ -62,15 +61,40 @@ NB: If you want to use the resulting JARs in an OSGi environment you'll have to 
 
 When the project is first created, it will not have the generated message classes and compile errors will occur! Best is to compile once on the command line before importing the project into the IDE.
 
-If the IDE reports some errors after the compilation with `mvn clean package`, try to use `mvn clean install`, like:
+If the IDE reports some errors after the compilation with `mvnw clean package`, try to use `mvnw clean install`, like:
 ```
-$ mvn clean install -Dmaven.javadoc.skip=true -DskipTests -PskipBundlePlugin
+$ mvnw clean install -Dmaven.javadoc.skip=true -DskipTests -PskipBundlePlugin,minimal-fix-latest
 ```
+
+### IntelliJ IDEA
+
+For IntelliJ IDEA there are additional steps necessary:
+
+1. Open the Maven tool window. Select `quickfixj-messages-all`, all the `quickfixj-messages-fix*` modules, and optionally `quickfixj-orchestration`. Right-click and choose **Ignore Projects**.
+2. Click **Reload All Maven Projects**.
+3. IntelliJ now resolves those dependencies to the jars in `~/.m2`, which `mvn install` already built. It also stops compiling the generated sources, which sometimes leads to an out-of-memory error.
+4. If you change the message generation or dictionaries, run `./mvnw install` again, then reload.
 
 ## configuration options
-https://rawgit.com/quickfix-j/quickfixj/master/quickfixj-core/src/main/doc/usermanual/usage/configuration.html
+
+https://quickfix-j.github.io/quickfixj/quickfixj-core/src/main/doc/usermanual/usage/configuration.html
 
 ## basics
+
+### related projects
+
+QuickFIX/J includes some example applications in the `quickfixj-examples` module. Additionally, here are some links to related projects:
+
+Examples by Geoffrey Gershaw: https://github.com/ggershaw/Examples
+
+Examples from QuickFIX/J Spring Boot Starter: https://github.com/esanchezros/quickfixj-spring-boot-starter-examples
+
+AssertJ assertions for QuickFIX/J: https://github.com/esanchezros/assertj-quickfixj
+
+FixMock, a WireMock-inspired mocking library for FIX: https://github.com/esanchezros/fix-mock
+
+If you would like to be added to this list, please open a PR with the changes.
+
 
 ### Creating a QuickFIX/J application
 
@@ -96,6 +120,9 @@ Here are explanations of what these functions provide for you.
 
 
 The sample code below shows how you might start up a FIX acceptor which listens on a socket. If you wanted an initiator, you would simply replace the acceptor in this code fragment with a `SocketInitiator`. `ThreadedSocketInitiator` and `ThreadedSocketAcceptor` classes are also available. These will supply a thread to each session that is created. If you use these you must make sure your application is thread safe.
+
+For a detailed description of the QuickFIX/J threading model — including the single-threaded vs. thread-per-session strategies, the timer thread, heartbeat management, queue back-pressure, and thread-safety implications for application developers — see [docs/threading-model.md](docs/threading-model.md) and [docs/threading-developer-guide.md‎](docs/threading-developer-guide.md).
+
 
 ```Java
 import quickfix.*;
@@ -272,5 +299,110 @@ void sendOrderCancelRequest() throws SessionNotFound {
   message.set(new Text("Cancel My Order!"));
 
   Session.sendToTarget(message, "TW", "TARGET");
+}
+```
+
+## QuickFIX/J Runtime
+
+This project builds artefacts for the standard published FIX specification versions from FIX 4.0 to FIX Latest. 
+
+* ```quickfixj-messages-fix40```
+* ```quickfixj-messages-fix41```
+* ```quickfixj-messages-fix42```
+* ```quickfixj-messages-fix43```
+* ```quickfixj-messages-fix44```
+* ```quickfixj-messages-fix50```
+* ```quickfixj-messages-fix50sp1```
+* ```quickfixj-messages-fix50sp2```
+* ```quickfixj-messages-fixlatest```
+* ```quickfixj-messages-fixt11```
+* ```quickfixj-messages-all``` - includes all of the above
+
+These artefacts are <u>**test**</u> dependencies of ```quickfixj-core```. They are **not** specified as _runtime_ dependencies, this makes it easier to customise QuickFIX/J deployments. 
+
+If you have no need to customise a FIX integration then you can use the ```org.quickfixj``` artefacts built by this project. Simply include them as dependencies of your application.
+
+Artefacts for unused FIX specification versions can be omitted from your runtime. 
+Many integrations will not require ```quickfixj-messages-all``` and need only depend on artefacts for a subset of the FIX standard versions. Please note that FIX Protocol versions 5.0 and later depend on ```quickfixj-messages-fixt11``` which provides the implementation for the FIXT1.1 transport messages.
+
+Many integrations require specialisation of the FIX Messages, Components and/or Fields. This is accomplished by building and using custom artefacts. Please see [Customising QuickFIX/J](./customising-quickfixj.md) for more detail.
+
+### Application Dependencies for QuickFIX/J Messages Build
+
+![image info](./src/main/puml/dependencies_fixt11_fixlatest.png)
+
+![image info](./src/main/puml/dependencies_qfj_all.png)
+
+### Application Dependencies for Custom Messages Build
+
+![image info](./src/main/puml/custom_dependencies.png)
+
+![image info](./src/main/puml/custom_dependencies_fixt11_fixlatest.png)
+
+### Using SNAPSHOTs
+
+The nightly SNAPSHOT releases are available on **GitHub Packages**. 
+GitHub Packages requires authentication - even for public repositories. 
+You need to use a [Personal Access Token (PAT)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens) 
+with `read:packages` permission.
+
+#### Maven Setup:
+
+Add the authentication part to your `settings.xml` file in `servers`:
+
+```xml
+<!--settings.xml-->
+<servers>
+  <server>
+    <id>github-quickfixj</id>
+    <username>USERNAME</username> <!-- Your GitHub username -->
+    <password>GITHUB_PAT</password> <!-- Your GitHub PAT -->
+  </server>
+</servers>
+```
+
+Add the GitHub Packages repository in `repositories` and the desired `SNAPSHOT` version in `dependencies`:
+
+```xml
+<!--pom.xml-->
+<repositories>
+  <repository>
+    <id>github-quickfixj</id>
+    <name>GitHub Packages for quickfixj</name>
+    <url>https://maven.pkg.github.com/quickfix-j/quickfixj</url>
+    <snapshots>
+      <enabled>true</enabled>
+    </snapshots>
+  </repository>
+
+  <!-- other repositories-->
+</repositories>
+
+
+<dependencies>
+  <dependency>
+    <groupId>org.quickfixj</groupId>
+    <artifactId>quickfixj-all</artifactId>
+    <version>3.0.0-SNAPSHOT</version>
+  </dependency>
+  
+  <!-- other dependencies-->
+</dependencies>
+```
+
+#### Gradle Setup (groovy):
+
+Add the following to your `build.gradle` file:
+
+```groovy
+//build.gradle
+repositories {
+    maven {
+        url = uri("https://maven.pkg.github.com/quickfix-j/quickfixj")
+        credentials {
+            username = "USERNAME" // Your GitHub username
+            password = "GITHUB_PAT" // Your GitHub PAT
+        }
+    }
 }
 ```

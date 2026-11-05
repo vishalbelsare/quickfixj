@@ -662,6 +662,13 @@ public class SessionScheduleTest {
         c.set(Calendar.HOUR_OF_DAY, 15);
         c.set(Calendar.MINUTE, 0);
         c.set(Calendar.SECOND, 0);
+        // Fix the millisecond to a non-zero value so that this test is not flaky:
+        // the session interval end computed by DefaultSessionSchedule always has
+        // MILLISECOND == 0, and the end of an interval is treated as inclusive, so if
+        // "now" happened to also land on MILLISECOND == 0 (which depends on the real
+        // wall-clock time when the test starts), the transition out of the session would
+        // be detected one timeIncrement late, causing a spurious "wrong end time" failure.
+        c.set(Calendar.MILLISECOND, 1);
         mockSystemTimeSource.setTime(c);
 
         assertFalse(schedule.isSessionTime());
@@ -690,6 +697,34 @@ public class SessionScheduleTest {
             }
             mockSystemTimeSource.increment(timeIncrement * 1000L);
         }
+    }
+
+    @Test
+    public void testWeeklyIsSessionTimeInclusiveAtEndBoundary() throws Exception {
+        SessionSettings settings = new SessionSettings();
+        settings.setString(Session.SETTING_START_DAY, DayConverter.toString(Calendar.FRIDAY));
+        settings.setString(Session.SETTING_START_TIME, "16:00:00");
+        settings.setString(Session.SETTING_END_DAY, DayConverter.toString(Calendar.FRIDAY));
+        settings.setString(Session.SETTING_END_TIME, "13:00:00");
+        SessionID sessionID = new SessionID("FIX.4.2", "SENDER", "TARGET");
+        SessionSchedule schedule = new DefaultSessionSchedule(settings, sessionID);
+
+        Calendar end = SystemTime.getUtcCalendar();
+        end.set(Calendar.DAY_OF_WEEK, Calendar.FRIDAY);
+        end.set(Calendar.HOUR_OF_DAY, 13);
+        end.set(Calendar.MINUTE, 0);
+        end.set(Calendar.SECOND, 0);
+        end.set(Calendar.MILLISECOND, 0);
+
+        // DefaultSessionSchedule computes the interval end with MILLISECOND == 0 and
+        // treats it as inclusive, so "now" landing exactly on the end time must still
+        // be considered in session, while one millisecond later it must not be.
+        mockSystemTimeSource.setTime(end);
+        assertTrue("end time should be inclusive", schedule.isSessionTime());
+
+        mockSystemTimeSource.increment(1);
+        assertFalse("one millisecond past the inclusive end should be out of session",
+                schedule.isSessionTime());
     }
 
     @Test
@@ -1402,6 +1437,65 @@ public class SessionScheduleTest {
         // November,7 -> Friday
         doIsSessionTimeTest(schedule, true, 2008, Calendar.NOVEMBER, 7, 17, 0, 0,
                 TimeZone.getTimeZone("America/New_York"));
+    }
+
+    // https://github.com/quickfix-j/quickfixj/issues/486
+    @Test
+    public void testSessionTimeEndBeforeStartUsingWeekdaysDifferentTimeZones() throws Exception {
+        SessionSettings settings = new SessionSettings();
+        settings.setString(Session.SETTING_START_TIME, "23:55:00 Europe/Madrid");
+        settings.setString(Session.SETTING_END_TIME, "17:05:00 America/New_York");
+        settings.setString(Session.SETTING_WEEKDAYS, "Sun,Mon,Tue,Wed,Thu");
+
+        mockSystemTimeSource.setTime(getTimeStamp(2008, Calendar.NOVEMBER, 2, 18, 0, 0, TimeZone.getTimeZone("America/New_York")));
+
+        SessionID sessionID = new SessionID("FIX.4.2", "SENDER", "TARGET");
+        SessionSchedule schedule = new DefaultSessionSchedule(settings, sessionID);
+        // Schedule should be (assuming daylight savings time):
+        // 23:55 Sunday Madrid to 17:05 Monday NY // 21:55 Sunday UTC to 21:05 Monday UTC
+        // 23:55 Monday Madrid to 17:05 Tuesday NY // 21:55 Monday UTC to 21:05 Tuesday UTC
+        // 23:55 Tuesday Madrid to 17:05 Wednesday NY // 21:55 Tuesday UTC to 21:05 Wednesday UTC
+        // 23:55 Wednesday Madrid to 17:05 Thursday NY // 21:55 Wednesday UTC to 21:05 Thursday UTC
+        // 23:55 Thursday Madrid to 17:05 Friday NY // 21:55 Thursday UTC to 21:05 Friday UTC
+
+        // Saturday
+        doIsSessionTimeTest(schedule, false, 2022, Calendar.APRIL, 16, 21, 0, 0); // 23:00 Madrid
+        doIsSessionTimeTest(schedule, false, 2022, Calendar.APRIL, 16, 22, 0, 0); // 00:00 Madrid next day
+        doIsSessionTimeTest(schedule, false, 2022, Calendar.APRIL, 16, 22, 1, 0); // 00:01 Madrid next day
+        doIsSessionTimeTest(schedule, false, 2022, Calendar.APRIL, 16, 23, 0, 0); // 01:00 Madrid next day
+
+        // Sunday
+        doIsSessionTimeTest(schedule, false, 2022, Calendar.APRIL, 17, 0, 1, 0); // 19:01 Madrid
+        doIsSessionTimeTest(schedule, false, 2022, Calendar.APRIL, 17, 21, 54, 59);// 23:54 Madrid
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 17, 21, 55, 00); // 23:55 Madrid. Correct opening time
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 17, 21, 57, 0); // 23:57 Madrid
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 17, 22, 00, 0); // 00:00 Madrid next day.
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 17, 23, 57, 0); // 01:57 Madrid next day.
+
+        // Monday
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 0, 1, 0); // 02:01 Madrid.
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 3, 0, 1); // 05:00 Madrid.
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 3, 59, 59); // 05:59 Madrid.
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 4, 00, 59); // 06:00 Madrid.
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 17, 00, 59); // 19:00 Madrid.
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 21, 00, 00); // 23:00 Madrid / 17:00 NY
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 21, 4, 59); // 23:04:59 Madrid / 17:04:59 NY
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 21, 5, 0); // 23:05:00 Madrid / 17:05 NY
+        doIsSessionTimeTest(schedule, false, 2022, Calendar.APRIL, 18, 21, 5, 1); // 23:05:01 Madrid / 17:05:01 NY. Correct close time
+        doIsSessionTimeTest(schedule, false, 2022, Calendar.APRIL, 18, 21, 54, 0); // 23:54:00 Madrid.
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 21, 55, 00); // 23:55 Madrid. Correct opening time
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 21, 57, 0); // 23:57 Madrid
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 22, 56, 0); //
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 23, 6, 0); //
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 23, 54, 0); //
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 18, 23, 56, 0); //
+        // Tuesday
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 19, 0, 1, 0); //
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 19, 3, 0, 1); //
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 19, 17, 00, 59);
+        doIsSessionTimeTest(schedule, true, 2022, Calendar.APRIL, 19, 21, 00, 00);
+        doIsSessionTimeTest(schedule, false, 2022, Calendar.APRIL, 19, 21, 6, 0);
+        doIsSessionTimeTest(schedule, false, 2022, Calendar.APRIL, 19, 21, 54, 0);
     }
 
 }

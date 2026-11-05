@@ -7,9 +7,8 @@ import junit.framework.TestCase;
 import junit.framework.TestResult;
 import junit.framework.TestSuite;
 import org.apache.mina.util.AvailablePortFinder;
-import org.logicalcobwebs.proxool.ProxoolException;
-import org.logicalcobwebs.proxool.ProxoolFacade;
-import org.logicalcobwebs.proxool.admin.SnapshotIF;
+import org.junit.runner.RunWith;
+import org.junit.runners.AllTests;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import quickfix.Session;
@@ -28,19 +27,34 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 
-public class AcceptanceTestSuite extends TestSuite {
+/**
+ * Acceptance test suite that programmatically discovers and runs FIX protocol tests.
+ * <p>
+ * This class uses composition to hold a {@link TestSuite} internally, rather than
+ * extending it directly. The static {@code suite()} method builds a hierarchical
+ * test tree that is executed via the JUnit 4 {@link AllTests} runner.
+ */
+@RunWith(AllTests.class)
+public class AcceptanceTestSuite {
+
+    private final TestSuite delegate;
     private static final String ATEST_TIMEOUT_KEY = "atest.timeout";
     private static final String ATEST_TRANSPORT_KEY = "atest.transport";
     private static final String ATEST_SKIPSLOW_KEY = "atest.skipslow";
+    private static final String ATEST_VERBOSE_KEY = "atest.verbose";
     private static final Logger log = LoggerFactory.getLogger(AcceptanceTestSuite.class);
     private static final String acceptanceTestResourcePath = "quickfix/test/acceptance/definitions/";
     private static final String acceptanceTestBaseDir = AcceptanceTestSuite.class.getClassLoader().getResource(acceptanceTestResourcePath).getPath();
 
     private static int transportType = ProtocolFactory.SOCKET;
-    private static int port = 9887;
+    private static int port = AvailablePortFinder.getNextAvailable();
 
     private final boolean skipSlowTests;
+    private final boolean verboseLogging;
     private final boolean multithreaded;
 
     private final Map<Object, Object> overridenProperties;
@@ -72,6 +86,23 @@ public class AcceptanceTestSuite extends TestSuite {
             result.startTest(this);
             TestConnection connection = null;
             String failureString = "test " + filename + " failed with message: ";
+
+            log.info("Running test {}, filename : {}", this.testname, this.filename);
+
+            java.util.logging.Logger rootLogger = java.util.logging.Logger.getLogger("");
+            Handler[] existingHandlers = rootLogger.getHandlers();
+            Level[] originalLevels = new Level[existingHandlers.length];
+            CapturingLogHandler capturingHandler = null;
+            if (!verboseLogging) {
+                for (int i = 0; i < existingHandlers.length; i++) {
+                    originalLevels[i] = existingHandlers[i].getLevel();
+                    existingHandlers[i].setLevel(Level.OFF);
+                }
+                capturingHandler = new CapturingLogHandler();
+                rootLogger.addHandler(capturingHandler);
+            }
+
+            boolean testFailed = false;
             try {
                 connection = new TestConnection();
                 List<TestStep> testSteps = load(filename);
@@ -79,12 +110,27 @@ public class AcceptanceTestSuite extends TestSuite {
                     testStep.run(result, connection);
                 }
             } catch (AssertionFailedError e) {
+                testFailed = true;
                 result.addFailure(this, e);
                 log.error(failureString + e.getMessage());
             } catch (Throwable t) {
+                testFailed = true;
                 result.addError(this, t);
                 log.error(failureString + t.getMessage());
             } finally {
+                if (!verboseLogging) {
+                    rootLogger.removeHandler(capturingHandler);
+                    for (int i = 0; i < existingHandlers.length; i++) {
+                        existingHandlers[i].setLevel(originalLevels[i]);
+                    }
+                    if (testFailed) {
+                        for (LogRecord record : capturingHandler.drainRecords()) {
+                            for (Handler handler : existingHandlers) {
+                                handler.publish(record);
+                            }
+                        }
+                    }
+                }
                 if (connection != null) {
                     connection.tearDown();
                 }
@@ -93,26 +139,10 @@ public class AcceptanceTestSuite extends TestSuite {
             //printDatabasePoolingStatistics();
         }
 
-        @SuppressWarnings("unused")
-        protected void printDatabasePoolingStatistics() {
-            try {
-                for (String alias : ProxoolFacade.getAliases()) {
-                    SnapshotIF snapshot = ProxoolFacade.getSnapshot(alias, true);
-                    System.out.println("active:" + snapshot.getActiveConnectionCount() + ",max:"
-                            + snapshot.getMaximumConnectionCount() + ",served:"
-                            + snapshot.getServedCount());
-                }
-            } catch (ProxoolException e) {
-                e.printStackTrace();
-            }
-        }
-
         private List<TestStep> load(String filename) throws IOException {
             ArrayList<TestStep> steps = new ArrayList<>();
             log.info("load test: " + filename);
-            BufferedReader in = null;
-            try {
-                in = new BufferedReader(new InputStreamReader(new FileInputStream(filename), "ISO8859_1"));
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(filename), "ISO8859_1"))) {
                 String line = in.readLine();
                 while (line != null) {
                     if (line.matches("^[ \t]*#.*")) {
@@ -129,14 +159,6 @@ public class AcceptanceTestSuite extends TestSuite {
                         steps.add(new ExpectDisconnectStep(line));
                     }
                     line = in.readLine();
-                }
-            } finally {
-                if (in != null) {
-                    try {
-                        in.close();
-                    } catch (IOException e1) {
-                        e1.printStackTrace();
-                    }
                 }
             }
             return steps;
@@ -157,13 +179,14 @@ public class AcceptanceTestSuite extends TestSuite {
         SystemTime.setTimeSource(null);
 
         String name = testDirectory.substring(testDirectory.lastIndexOf(File.separatorChar) + 1);
-        this.setName(name + (multithreaded ? "-threaded" : ""));
+        this.delegate = new TestSuite(name + (multithreaded ? "-threaded" : ""));
         Long timeout = Long.getLong(ATEST_TIMEOUT_KEY);
         if (timeout != null) {
             ExpectMessageStep.TIMEOUT_IN_MS = timeout;
         }
 
         this.skipSlowTests = Boolean.getBoolean(ATEST_SKIPSLOW_KEY);
+        this.verboseLogging = Boolean.getBoolean(ATEST_VERBOSE_KEY);
 
         addTests(new File(acceptanceTestBaseDir + testDirectory + "/fix40"));
         addTests(new File(acceptanceTestBaseDir + testDirectory + "/fix41"));
@@ -171,6 +194,7 @@ public class AcceptanceTestSuite extends TestSuite {
         addTests(new File(acceptanceTestBaseDir + testDirectory + "/fix43"));
         addTests(new File(acceptanceTestBaseDir + testDirectory + "/fix44"));
         addTests(new File(acceptanceTestBaseDir + testDirectory + "/fix50"));
+        addTests(new File(acceptanceTestBaseDir + testDirectory + "/fixLatest"));
     }
 
     public String toString() {
@@ -185,17 +209,24 @@ public class AcceptanceTestSuite extends TestSuite {
         addTests(new File(acceptanceTestBaseDir + "server/" + name));
     }
 
+    /**
+     * Returns the internal {@link TestSuite} that contains all the acceptance tests.
+     */
+    public TestSuite getTestSuite() {
+        return delegate;
+    }
+
     protected void addTests(File directory) {
         if (!directory.exists())
             return;
         if (!directory.isDirectory()) {
-            addTest(new AcceptanceTest(directory.getPath()));
+            delegate.addTest(new AcceptanceTest(directory.getPath()));
         } else {
             if (directory.exists()) {
                 File[] files = directory.listFiles(new TestDefinitionFilter());
                 for (File file : files) {
                     if (!file.isDirectory() && !isTestSkipped(file)) {
-                        addTest(new AcceptanceTest(file.getPath()));
+                        delegate.addTest(new AcceptanceTest(file.getPath()));
                     }
                 }
                 for (File file : files) {
@@ -215,23 +246,48 @@ public class AcceptanceTestSuite extends TestSuite {
                         || file.getName().contains("SendTestRequest"));
     }
 
+    private static final class CapturingLogHandler extends Handler {
+        private final List<LogRecord> records = new ArrayList<>();
+
+        @Override
+        public synchronized void publish(LogRecord record) {
+            records.add(record);
+        }
+
+        @Override
+        public void flush() {
+        }
+
+        @Override
+        public void close() throws SecurityException {
+        }
+
+        public synchronized List<LogRecord> drainRecords() {
+            List<LogRecord> drained = new ArrayList<>(records);
+            records.clear();
+            return drained;
+        }
+    }
+
     private static final class AcceptanceTestServerSetUp extends TestSetup {
-        private final boolean threaded;
-        private final Map<Object, Object> overridenProperties;
-//        private Thread serverThread;
+        private final AcceptanceTestSuite acceptanceSuite;
         private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
         private ATServer server;
 
         private AcceptanceTestServerSetUp(AcceptanceTestSuite suite) {
-            super(suite);
-            this.threaded = suite.isMultithreaded();
-            this.overridenProperties = suite.getOverridenProperties();
+            super(suite.getTestSuite());
+            this.acceptanceSuite = suite;
         }
 
         protected void setUp() throws Exception {
             super.setUp();
-            server = new ATServer((TestSuite) getTest(), threaded, transportType, port, overridenProperties);
+            server = new ATServer(
+                    acceptanceSuite.getTestSuite(),
+                    acceptanceSuite.isMultithreaded(),
+                    transportType,
+                    port,
+                    acceptanceSuite.getOverridenProperties());
             server.setUsingMemoryStore(true);
             executor.execute(server);
             server.waitForInitialization();
@@ -247,7 +303,6 @@ public class AcceptanceTestSuite extends TestSuite {
 
     public static Test suite() {
         transportType = ProtocolFactory.getTransportType(System.getProperty(ATEST_TRANSPORT_KEY, ProtocolFactory.getTypeString(ProtocolFactory.SOCKET)));
-        port = AvailablePortFinder.getNextAvailable(port);
         TestSuite acceptanceTests = new TestSuite(AcceptanceTestSuite.class.getSimpleName());
         // default server
         acceptanceTests.addTest(new AcceptanceTestServerSetUp(new AcceptanceTestSuite("server", false)));

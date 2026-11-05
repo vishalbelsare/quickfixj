@@ -64,6 +64,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -208,6 +209,12 @@ public class Session implements Closeable {
     public static final String SETTING_VALIDATE_UNORDERED_GROUP_FIELDS = "ValidateUnorderedGroupFields";
 
     /**
+     * Session validation setting for enabling whether first found field in repeating group will be used as
+     * delimiter. Values are "Y" or "N". Default is "N".
+     */
+    public static final String SETTING_FIRST_FIELD_IN_GROUP_IS_DELIMITER = "FirstFieldInGroupIsDelimiter";
+
+    /**
      * Session validation setting for enabling whether field values are
      * validated. Empty fields values are not allowed. Values are "Y" or "N".
      * Default is "Y".
@@ -272,7 +279,7 @@ public class Session implements Closeable {
     /**
      * Session setting to control precision in message timestamps.
      * Valid values are "SECONDS", "MILLIS", "MICROS", "NANOS". Default is "MILLIS".
-     * Only valid for FIX version >= 4.2.
+     * Only valid for FIX version "&gt;"= 4.2.
      */
     public static final String SETTING_TIMESTAMP_PRECISION = "TimeStampPrecision";
 
@@ -283,7 +290,7 @@ public class Session implements Closeable {
 
     /**
      * Session setting that causes the session to reset sequence numbers when initiating
-     * a logon (>= FIX 4.2).
+     * a logon ("&gt;"= FIX 4.2).
      */
     public static final String SETTING_RESET_ON_LOGON = "ResetOnLogon";
 
@@ -317,10 +324,18 @@ public class Session implements Closeable {
     public static final String SETTING_USE_CLOSED_RESEND_INTERVAL = "ClosedResendInterval";
 
     /**
-     * Allow unknown fields in messages. This is intended for unknown fields with tags < 5000
+     * Allow unknown fields in messages. This is intended for unknown fields with tags "&lt;" 5000
      * (not user defined fields)
      */
     public static final String SETTING_ALLOW_UNKNOWN_MSG_FIELDS = "AllowUnknownMsgFields";
+
+    /**
+     * Allow field values that are not defined as enumerated values in the data
+     * dictionary, i.e. skip the validation of field values against the enumerated
+     * values defined for the field. Values of fields without enumerated values
+     * are not affected.
+     */
+    public static final String SETTING_ALLOW_UNKNOWN_ENUM_VALUES = "AllowUnknownEnumValues";
 
     public static final String SETTING_DEFAULT_APPL_VER_ID = "DefaultApplVerID";
 
@@ -412,6 +427,7 @@ public class Session implements Closeable {
     private long lastSessionLogon = 0;
 
     private final DataDictionaryProvider dataDictionaryProvider;
+    private final ValidationSettings validationSettings;
     private final boolean checkLatency;
     private final int maxLatency;
     private int resendRequestChunkSize = 0;
@@ -471,17 +487,44 @@ public class Session implements Closeable {
     protected static final Logger LOG = LoggerFactory.getLogger(Session.class);
 
     Session(Application application, MessageStoreFactory messageStoreFactory, SessionID sessionID,
-            DataDictionaryProvider dataDictionaryProvider, SessionSchedule sessionSchedule, LogFactory logFactory,
-            MessageFactory messageFactory, int heartbeatInterval) {
-        this(application, messageStoreFactory, sessionID, dataDictionaryProvider, sessionSchedule, logFactory,
-             messageFactory, heartbeatInterval, true, DEFAULT_MAX_LATENCY, UtcTimestampPrecision.MILLIS, false, false,
-             false, false, true, false, true, false, DEFAULT_TEST_REQUEST_DELAY_MULTIPLIER, null, true, new int[] {5},
-             false, false, false, false, true, false, true, false, null, true, DEFAULT_RESEND_RANGE_CHUNK_SIZE, false,
-             false, false, new ArrayList<StringField>(), DEFAULT_HEARTBEAT_TIMEOUT_MULTIPLIER, false);
+            DataDictionaryProvider dataDictionaryProvider, ValidationSettings validationSettings,
+            SessionSchedule sessionSchedule,
+            LogFactory logFactory, MessageFactory messageFactory, int heartbeatInterval) {
+        this(application, messageStoreFactory, sessionID, dataDictionaryProvider, validationSettings, sessionSchedule,
+                logFactory, messageFactory, heartbeatInterval, true, DEFAULT_MAX_LATENCY, UtcTimestampPrecision.MILLIS,
+                false, false, false, false, true, false, true, false,
+                DEFAULT_TEST_REQUEST_DELAY_MULTIPLIER, null, true, new int[] { 5 }, false, false,
+                false, false, true, false, true, false, null, true, DEFAULT_RESEND_RANGE_CHUNK_SIZE, false, false, false,
+                new ArrayList<StringField>(), DEFAULT_HEARTBEAT_TIMEOUT_MULTIPLIER, false);
     }
 
     Session(Application application, MessageStoreFactory messageStoreFactory, SessionID sessionID,
-            DataDictionaryProvider dataDictionaryProvider, SessionSchedule sessionSchedule,
+            DataDictionaryProvider dataDictionaryProvider, ValidationSettings validationSettings,
+            SessionSchedule sessionSchedule,
+            LogFactory logFactory, MessageFactory messageFactory, int heartbeatInterval,
+            boolean checkLatency, int maxLatency, UtcTimestampPrecision timestampPrecision,
+            boolean resetOnLogon, boolean resetOnLogout, boolean resetOnDisconnect,
+            boolean refreshOnLogon, boolean checkCompID,
+            boolean redundantResentRequestsAllowed, boolean persistMessages,
+            boolean useClosedRangeForResend, double testRequestDelayMultiplier,
+            DefaultApplVerID senderDefaultApplVerID, boolean validateSequenceNumbers,
+            int[] logonIntervals, boolean resetOnError, boolean disconnectOnError,
+            boolean disableHeartBeatCheck, boolean rejectGarbledMessage, boolean rejectInvalidMessage,
+            boolean rejectMessageOnUnhandledException, boolean requiresOrigSendingTime,
+            boolean forceResendWhenCorruptedStore, Set<InetAddress> allowedRemoteAddresses,
+            boolean validateIncomingMessage, int resendRequestChunkSize,
+            boolean enableNextExpectedMsgSeqNum, boolean enableLastMsgSeqNumProcessed,
+            boolean validateChecksum, List<StringField> logonTags, double heartBeatTimeoutMultiplier,
+            boolean allowPossDup) {
+        this(application, messageStoreFactory, new InMemoryMessageQueueFactory(), sessionID, dataDictionaryProvider, validationSettings, sessionSchedule, logFactory,
+            messageFactory, heartbeatInterval, true, DEFAULT_MAX_LATENCY, UtcTimestampPrecision.MILLIS, false, false,
+            false, false, true, false, true, false, DEFAULT_TEST_REQUEST_DELAY_MULTIPLIER, null, true, new int[] {5},
+            false, false, false, false, true, false, true, false, null, true, DEFAULT_RESEND_RANGE_CHUNK_SIZE, false,
+            false, false, new ArrayList<StringField>(), DEFAULT_HEARTBEAT_TIMEOUT_MULTIPLIER, allowPossDup);
+    }
+
+    Session(Application application, MessageStoreFactory messageStoreFactory, MessageQueueFactory messageQueueFactory,
+            SessionID sessionID, DataDictionaryProvider dataDictionaryProvider, ValidationSettings validationSettings, SessionSchedule sessionSchedule,
             LogFactory logFactory, MessageFactory messageFactory, int heartbeatInterval,
             boolean checkLatency, int maxLatency, UtcTimestampPrecision timestampPrecision,
             boolean resetOnLogon, boolean resetOnLogout, boolean resetOnDisconnect,
@@ -508,6 +551,7 @@ public class Session implements Closeable {
         this.timestampPrecision = timestampPrecision;
         this.refreshOnLogon = refreshOnLogon;
         this.dataDictionaryProvider = dataDictionaryProvider;
+        this.validationSettings = validationSettings;
         this.messageFactory = messageFactory;
         this.checkCompID = checkCompID;
         this.redundantResentRequestsAllowed = redundantResentRequestsAllowed;
@@ -543,8 +587,13 @@ public class Session implements Closeable {
             addStateListener((SessionStateListener) messageStore);
         }
 
+        final MessageQueue messageQueue = messageQueueFactory.create(sessionID);
+        if (messageQueue instanceof SessionStateListener) {
+            addStateListener((SessionStateListener) messageQueue);
+        }
+
         state = new SessionState(this, engineLog, heartbeatInterval, heartbeatInterval != 0,
-            messageStore, testRequestDelayMultiplier, heartBeatTimeoutMultiplier);
+            messageStore, messageQueue, testRequestDelayMultiplier, heartBeatTimeoutMultiplier);
 
         registerSession(this);
 
@@ -617,7 +666,7 @@ public class Session implements Closeable {
     private boolean isCurrentSession(final long time)
             throws IOException {
         return sessionSchedule == null || sessionSchedule.isSameSession(
-                SystemTime.getUtcCalendar(time), SystemTime.getUtcCalendar(state.getCreationTime()));
+                SystemTime.getUtcCalendar(time), state.getCreationTimeCalendar());
     }
 
     /**
@@ -891,10 +940,10 @@ public class Session implements Closeable {
             return;
         }
         try {
+            if (application instanceof ApplicationExtended) {
+                ((ApplicationExtended) application).onBeforeSessionReset(sessionID);
+            }
             if (hasResponder() && isLoggedOn()) {
-                if (application instanceof ApplicationExtended) {
-                    ((ApplicationExtended) application).onBeforeSessionReset(sessionID);
-                }
                 state.setResetStatePending(true);
                 generateLogout("Session reset");
                 getLog().onEvent("Initiated logout request");
@@ -1011,7 +1060,7 @@ public class Session implements Closeable {
                 }
             }
 
-            if (validateIncomingMessage && dataDictionaryProvider != null) {
+            if (validateIncomingMessage && dataDictionaryProvider != null && validationSettings != null) {
                 final DataDictionary sessionDataDictionary = dataDictionaryProvider
                         .getSessionDataDictionary(beginString);
 
@@ -1026,28 +1075,28 @@ public class Session implements Closeable {
                 // related to QFJ-367 : just warn invalid incoming field/tags
                 try {
                     DataDictionary.validate(message, sessionDataDictionary,
-                            applicationDataDictionary);
+                            applicationDataDictionary, validationSettings);
                 } catch (final IncorrectTagValue e) {
                     if (rejectInvalidMessage) {
                         throw e;
                     } else {
-                        getLog().onErrorEvent("Warn: incoming message with " + e + ": " + getMessageToLog(message));
+                        getLog().onWarnEvent("incoming message with " + e + ": " + getMessageToLog(message));
                     }
                 } catch (final FieldException e) {
                     if (message.isSetField(e.getField())) {
                         if (rejectInvalidMessage) {
                             throw e;
                         } else {
-                            getLog().onErrorEvent(
-                                    "Warn: incoming message with incorrect field: "
+                            getLog().onWarnEvent(
+                                    "incoming message with incorrect field: "
                                             + message.getField(e.getField()) + ": " + getMessageToLog(message));
                         }
                     } else {
                         if (rejectInvalidMessage) {
                             throw e;
                         } else {
-                            getLog().onErrorEvent(
-                                    "Warn: incoming message with missing field: " + e.getField()
+                            getLog().onWarnEvent(
+                                    "incoming message with missing field: " + e.getField()
                                             + ": " + e.getMessage() + ": " + getMessageToLog(message));
                         }
                     }
@@ -1055,7 +1104,7 @@ public class Session implements Closeable {
                     if (rejectInvalidMessage) {
                         throw e;
                     } else {
-                        getLog().onErrorEvent("Warn: incoming " + e + ": " + getMessageToLog(message));
+                        getLog().onWarnEvent("incoming " + e + ": " + getMessageToLog(message));
                     }
                 }
             }
@@ -1272,7 +1321,7 @@ public class Session implements Closeable {
 
     private void nextReject(Message reject) throws FieldNotFound, RejectLogon, IncorrectDataFormat,
             IncorrectTagValue, UnsupportedMessageType, IOException, InvalidMessage {
-        if (!verify(reject, false, validateSequenceNumbers)) {
+        if (!verify(reject, validateSequenceNumbers, validateSequenceNumbers)) {
             return;
         }
         if (getExpectedTargetNum() == reject.getHeader().getInt(MsgSeqNum.FIELD)) {
@@ -1350,7 +1399,7 @@ public class Session implements Closeable {
     }
 
     private Message parseMessage(String messageData) throws InvalidMessage {
-        return MessageUtils.parse(this, messageData);
+        return MessageSessionUtils.parse(this, messageData);
     }
 
     private boolean isTargetTooLow(int msgSeqNum) throws IOException {
@@ -1533,7 +1582,7 @@ public class Session implements Closeable {
                 }
                 // QFJ-728: newSequence will be the seqnum of the next message so we
                 // delete all older messages from the queue since they are effectively skipped.
-                state.dequeueMessagesUpTo(newSequence);
+                state.getMessageQueue().dequeueMessagesUpTo(newSequence);
             } else if (newSequence < getExpectedTargetNum()) {
 
                 getLog().onErrorEvent(
@@ -1697,9 +1746,10 @@ public class Session implements Closeable {
 
     private void generateBusinessReject(Message message, int err, int field) throws FieldNotFound,
             IOException {
-        final Message reject = messageFactory.create(sessionID.getBeginString(),
-                MsgType.BUSINESS_MESSAGE_REJECT);
         final Header header = message.getHeader();
+        ApplVerID targetDefaultApplicationVersionID = getTargetDefaultApplicationVersionID();
+        final Message reject = messageFactory.create(sessionID.getBeginString(), targetDefaultApplicationVersionID,
+                MsgType.BUSINESS_MESSAGE_REJECT);
         reject.reverseRoute(header);
         initializeHeader(reject.getHeader());
 
@@ -1713,8 +1763,8 @@ public class Session implements Closeable {
         final String reason = BusinessRejectReasonText.getMessage(err);
         setRejectReason(reject, field, reason, field != 0);
         getLog().onErrorEvent(
-                "Reject sent for message " + msgSeqNum + (reason != null ? (": " + reason) : "")
-                        + (field != 0 ? (": tag=" + field) : ""));
+                "Reject sent for message number " + msgSeqNum + (reason != null ? (": " + reason) : "")
+                        + (field != 0 ? (": tag=" + field) : "") + " Message [" + message + "]" + " Reject [" + reject + "]");
 
         sendRaw(reject, 0);
     }
@@ -1786,17 +1836,21 @@ public class Session implements Closeable {
                 return false;
             }
 
-            if (checkTooHigh && isTargetTooHigh(msgSeqNum)) {
-                doTargetTooHigh(msg);
-                return false;
-            } else if (checkTooLow && isTargetTooLow(msgSeqNum)) {
-                doTargetTooLow(msg);
-                return false;
+            if(!state.isResetReceived()){
+                if (checkTooHigh && isTargetTooHigh(msgSeqNum)) {
+                    doTargetTooHigh(msg);
+                    return false;
+                } else if (checkTooLow && isTargetTooLow(msgSeqNum)) {
+                    doTargetTooLow(msg);
+                    stateListener.onPossDupMessageDiscarded(sessionID, msg);
+                    return false;
+                }
             }
 
             // Handle poss dup where msgSeq is as expected
             // FIX 4.4 Vol 2, test case 2f&g
             if (isPossibleDuplicate(msg) && !validatePossDup(msg)) {
+                stateListener.onPossDupMessageDiscarded(sessionID, msg);
                 return false;
             }
 
@@ -1829,7 +1883,7 @@ public class Session implements Closeable {
         return true;
     }
 
-    private boolean doTargetTooLow(Message msg) throws FieldNotFound, IOException {
+    private void doTargetTooLow(Message msg) throws FieldNotFound, IOException {
         if (!isPossibleDuplicate(msg)) {
             final int msgSeqNum = msg.getHeader().getInt(MsgSeqNum.FIELD);
             final String text = "MsgSeqNum too low, expecting " + getExpectedTargetNum()
@@ -1837,7 +1891,7 @@ public class Session implements Closeable {
             generateLogout(text);
             throw new SessionException(text);
         }
-        return validatePossDup(msg);
+        validatePossDup(msg);
     }
 
     private void doBadCompID(Message msg) throws IOException, FieldNotFound {
@@ -1907,14 +1961,10 @@ public class Session implements Closeable {
      */
     public void next() throws IOException {
 
-        if (!isEnabled()) {
-            if (isLoggedOn()) {
-                if (!state.isLogoutSent()) {
-                    getLog().onEvent("Initiated logout request");
-                    generateLogout(state.getLogoutReason());
-                }
-            } else {
-                return;
+        if (!isEnabled() && isLoggedOn()) {
+            if (!state.isLogoutSent()) {
+                getLog().onEvent("Initiated logout request");
+                generateLogout(state.getLogoutReason());
             }
         }
 
@@ -1936,6 +1986,13 @@ public class Session implements Closeable {
                     resetIfSessionNotCurrent(sessionID, now);
                 }
             }
+        }
+
+        // https://github.com/quickfix-j/quickfixj/issues/965
+        // allow the session schedule block above to run even when session is disabled,
+        // so that sequence numbers are reset as scheduled.
+        if (!isEnabled() && !isLoggedOn()) {
+            return;
         }
 
         // Return if we are not connected
@@ -1979,9 +2036,15 @@ public class Session implements Closeable {
                 disconnect("Timed out waiting for heartbeat", true);
                 stateListener.onHeartBeatTimeout(sessionID);
             } else {
-                LOG.warn("Heartbeat failure detected but deactivated");
+                getLog().onWarnEvent("Heartbeat failure detected but deactivated");
             }
-        } else {
+        } else if (isLoggedOn()) {
+            // #902: Only generate heartbeats/test requests when the session is
+            // fully established (Logon sent AND received). Generating a heartbeat
+            // in the window between setLogonReceived(true) and the acceptor's own
+            // outgoing Logon being sent would silently consume a sequence number
+            // via persist() without transmitting the message, causing the Logon
+            // response to carry the wrong MsgSeqNum.
             if (state.isTestRequestNeeded()) {
                 generateTestRequest("TEST");
                 getLog().onEvent("Sent test request TEST");
@@ -2044,7 +2107,6 @@ public class Session implements Closeable {
         }
         state.setLastReceivedTime(SystemTime.currentTimeMillis());
         state.clearTestRequestCounter();
-        state.setLogonSent(true);
         logonAttempts++;
 
         if (enableNextExpectedMsgSeqNum) {
@@ -2054,7 +2116,9 @@ public class Session implements Closeable {
         }
 
         setLogonTags(logon);
-        return sendRaw(logon, 0);
+        final boolean result = sendRaw(logon, 0);
+        state.setLogonSent(result);
+        return result;
     }
 
     /**
@@ -2107,7 +2171,7 @@ public class Session implements Closeable {
             state.setLogoutReceived(false);
             state.setResetReceived(false);
             state.setResetSent(false);
-            state.clearQueue();
+            state.getMessageQueue().clear();
             state.clearLogoutReason();
             state.setResendRange(0, 0);
 
@@ -2130,6 +2194,19 @@ public class Session implements Closeable {
             throw new RejectLogon("Logon attempt not within session time");
         }
 
+        if (sessionID.isFIXT() && dataDictionaryProvider != null) {
+            final DataDictionary dictionary = dataDictionaryProvider
+                    .getSessionDataDictionary(sessionID.getBeginString());
+            if (dictionary != null) {
+                Optional<String> defaultApplVerID = logon.getOptionalString(DefaultApplVerID.FIELD);
+                if (defaultApplVerID.isPresent()) {
+                    if (!dictionary.isFieldValue(ApplVerID.FIELD, defaultApplVerID.get())) {
+                        throw new RejectLogon("Invalid DefaultApplVerID=" + defaultApplVerID.get());
+                    }
+                }
+            }
+        }
+
         // QFJ-926 - reset session before accepting Logon
         resetIfSessionNotCurrent(sessionID, SystemTime.currentTimeMillis());
 
@@ -2143,6 +2220,10 @@ public class Session implements Closeable {
             getLog().onEvent(
                     "Inferring ResetSeqNumFlag as sequence number is 1 in response to reset request");
             state.setResetReceived(true);
+        }
+
+        if (!verify(logon, false, validateSequenceNumbers)) {
+            return;
         }
 
         if (state.isResetReceived()) {
@@ -2161,9 +2242,6 @@ public class Session implements Closeable {
             resetState();
         }
 
-        if (!verify(logon, false, validateSequenceNumbers)) {
-            return;
-        }
 
         // reset logout messages
         state.setLogoutReceived(false);
@@ -2219,7 +2297,8 @@ public class Session implements Closeable {
 
         // Check for proper sequence reset response
         if (state.isResetSent() && !state.isResetReceived()) {
-            disconnect("Received logon response before sending request", true);
+            disconnect("Expected Logon response to have reset sequence numbers in response to ResetSeqNumFlag", true);
+            return;
         }
 
         state.setResetSent(false);
@@ -2343,7 +2422,12 @@ public class Session implements Closeable {
                         generateSequenceReset(receivedMessage, begin, msgSeqNum);
                     }
                     getLog().onEvent("Resending message: " + msgSeqNum);
-                    send(msg.toString());
+                    boolean sent = send(msg.toString());
+                    if (!sent) {
+                        // Abort resend operation immediately - don't send any more messages
+                        getLog().onWarnEvent("Resending messages aborted.");
+                        return;
+                    }
                     begin = 0;
                     appMessageJustSent = true;
                 } else {
@@ -2399,7 +2483,7 @@ public class Session implements Closeable {
 
     private boolean nextQueued(int num) throws FieldNotFound, RejectLogon, IncorrectDataFormat,
             IncorrectTagValue, UnsupportedMessageType, IOException, InvalidMessage {
-        final Message msg = state.dequeue(num);
+        final Message msg = state.getMessageQueue().dequeue(num);
         if (msg != null) {
             getLog().onEvent("Processing queued message: " + num);
 
@@ -2567,8 +2651,7 @@ public class Session implements Closeable {
         }
 
         setLogonTags(logon);
-        sendRaw(logon, 0);
-        state.setLogonSent(true);
+        state.setLogonSent(sendRaw(logon, 0));
     }
 
     private void persist(Header header, String messageString, int num) throws IOException, FieldNotFound {
@@ -2668,7 +2751,7 @@ public class Session implements Closeable {
     }
 
     private void enqueueMessage(final Message msg, final int msgSeqNum) {
-        state.enqueue(msgSeqNum, msg);
+        state.getMessageQueue().enqueue(msgSeqNum, msg);
         getLog().onEvent("Enqueued at pos " + msgSeqNum + ": " + msg);
     }
 
@@ -2764,6 +2847,10 @@ public class Session implements Closeable {
 
     public DataDictionaryProvider getDataDictionaryProvider() {
         return dataDictionaryProvider;
+    }
+
+    public ValidationSettings getValidationSettings() {
+        return validationSettings;
     }
 
     public SessionID getSessionID() {

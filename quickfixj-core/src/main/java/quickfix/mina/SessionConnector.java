@@ -27,6 +27,7 @@ import quickfix.ConfigError;
 import quickfix.Connector;
 import quickfix.ExecutorFactory;
 import quickfix.FieldConvertError;
+import quickfix.LogUtil;
 import quickfix.Session;
 import quickfix.SessionFactory;
 import quickfix.SessionID;
@@ -98,7 +99,7 @@ public abstract class SessionConnector implements Connector {
      * If using external Executors, this method should be called immediately after the constructor. Once set, the
      * Executors cannot be changed.
      * </p>
-     * 
+     *
      * @param executorFactory See {@link ExecutorFactory} for detailed requirements.
      */
     public void setExecutorFactory(ExecutorFactory executorFactory) {
@@ -243,7 +244,7 @@ public abstract class SessionConnector implements Connector {
             try {
                 session.logout();
             } catch (Throwable e) {
-                logError(session.getSessionID(), null, "Error during logout", e);
+                LogUtil.logThrowable(session.getLog(), "Error during logout", e);
             }
         }
 
@@ -255,7 +256,7 @@ public abstract class SessionConnector implements Connector {
                             session.disconnect("Forcibly disconnecting session", false);
                         }
                     } catch (Throwable e) {
-                        logError(session.getSessionID(), null, "Error during disconnect", e);
+                        LogUtil.logThrowable(session.getLog(), "Error during disconnect", e);
                     }
                 }
             } else {
@@ -295,22 +296,11 @@ public abstract class SessionConnector implements Connector {
         }
     }
 
-    protected void logError(SessionID sessionID, IoSession protocolSession, String message, Throwable t) {
-        log.error(message + getLogSuffix(sessionID, protocolSession), t);
-    }
-
-    private String getLogSuffix(SessionID sessionID, IoSession protocolSession) {
-        String suffix = ":";
-        if (sessionID != null) {
-            suffix += "sessionID=" + sessionID.toString() + ";";
-        }
-        if (protocolSession != null) {
-            suffix += "address=" + protocolSession.getRemoteAddress();
-        }
-        return suffix;
-    }
-
     protected void startSessionTimer() {
+        // Check if a session timer is already running to avoid creating multiple timers
+        if (checkSessionTimerRunning()) {
+            return;
+        }
         Runnable timerTask = new SessionTimerTask();
         if (shortLivedExecutor != null) {
             timerTask = new DelegatingTask(timerTask, shortLivedExecutor);
@@ -329,7 +319,7 @@ public abstract class SessionConnector implements Connector {
 
     // visible for testing
     boolean checkSessionTimerRunning() {
-        if ( sessionTimerFuture != null ) {
+        if (sessionTimerFuture != null) {
             return !sessionTimerFuture.isDone();
         }
         return false;
@@ -347,7 +337,7 @@ public abstract class SessionConnector implements Connector {
                     try {
                         session.next();
                     } catch (IOException e) {
-                        logError(session.getSessionID(), null, "Error in session timer processing", e);
+                        LogUtil.logThrowable(session.getLog(), "Error in session timer processing", e);
                     }
                 }
             } catch (Throwable e) {
@@ -433,13 +423,13 @@ public abstract class SessionConnector implements Connector {
     protected IoFilterChainBuilder getIoFilterChainBuilder() {
         return ioFilterChainBuilder;
     }
-    
+
     /**
      * Closes all managed sessions of an Initiator/Acceptor.
      *
-     * @param ioService Acceptor or Initiator implementation
+     * @param ioService        Acceptor or Initiator implementation
      * @param awaitTermination whether to wait for underlying ExecutorService to terminate
-     * @param logger used for logging WARNING when IoSession could not be closed
+     * @param logger           used for logging WARNING when IoSession could not be closed
      */
     public static void closeManagedSessionsAndDispose(IoService ioService, boolean awaitTermination, Logger logger) {
         Map<Long, IoSession> managedSessions = ioService.getManagedSessions();
@@ -464,15 +454,12 @@ public abstract class SessionConnector implements Connector {
     }
 
     protected boolean isContinueInitOnError() {
-        boolean continueInitOnError = false;
-        if (settings.isSetting(SessionFactory.SETTING_CONTINUE_INIT_ON_ERROR)) {
-            try {
-                continueInitOnError = settings.getBool(SessionFactory.SETTING_CONTINUE_INIT_ON_ERROR);
-            } catch (ConfigError | FieldConvertError ex) {
-                // ignore and return default
-            }
+        try {
+            return settings.getBoolOrDefault(SessionFactory.SETTING_CONTINUE_INIT_ON_ERROR, false);
+        } catch (FieldConvertError | ConfigError ex) {
+            // ignore and return default
         }
-        return continueInitOnError;
+        return false;
     }
 
 }

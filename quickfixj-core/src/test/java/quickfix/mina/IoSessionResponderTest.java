@@ -34,9 +34,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import quickfix.Log;
+import quickfix.Session;
+import quickfix.SessionID;
 
 public class IoSessionResponderTest {
     
+    private final SessionID sessionID = new SessionID("FIX.4.4:SENDER->TARGET");
+
     @Test
     public void testAsynchronousSend() throws Exception {
         IoSession mockIoSession = mock(IoSession.class);
@@ -60,6 +65,7 @@ public class IoSessionResponderTest {
         WriteFuture mockWriteFuture = mock(WriteFuture.class);
         when(mockIoSession.write("abcd")).thenReturn(mockWriteFuture);
         when(mockWriteFuture.awaitUninterruptibly(timeout)).thenReturn(true);
+        when(mockWriteFuture.isWritten()).thenReturn(true);
         IoSessionResponder responder = new IoSessionResponder(mockIoSession, true, timeout, 0);
 
         boolean result = responder.send("abcd");
@@ -67,6 +73,25 @@ public class IoSessionResponderTest {
         assertTrue(result);
         verify(mockIoSession).write("abcd");
         verify(mockWriteFuture).awaitUninterruptibly(timeout);
+        verify(mockWriteFuture).isWritten();
+        verifyNoMoreInteractions(mockWriteFuture);
+        verifyNoMoreInteractions(mockIoSession);
+    }
+
+    @Test
+    public void testSynchronousSendWithCompletedFailedWrite() throws Exception {
+        int timeout = 123;
+        IoSession mockIoSession = mock(IoSession.class);
+        WriteFuture mockWriteFuture = mock(WriteFuture.class);
+        when(mockIoSession.write("abcd")).thenReturn(mockWriteFuture);
+        when(mockWriteFuture.awaitUninterruptibly(timeout)).thenReturn(true);
+        when(mockWriteFuture.isWritten()).thenReturn(false);
+        IoSessionResponder responder = new IoSessionResponder(mockIoSession, true, timeout, 0);
+
+        assertFalse(responder.send("abcd"));
+        verify(mockIoSession).write("abcd");
+        verify(mockWriteFuture).awaitUninterruptibly(timeout);
+        verify(mockWriteFuture).isWritten();
         verifyNoMoreInteractions(mockWriteFuture);
         verifyNoMoreInteractions(mockIoSession);
     }
@@ -75,7 +100,10 @@ public class IoSessionResponderTest {
     public void testSynchronousSendWithJoinException() throws Exception {
         int timeout = 123;
         IoSession mockIoSession = mock(IoSession.class);
-
+        Session mockSession = mock(Session.class);
+        when(mockIoSession.getAttribute(SessionConnector.QF_SESSION)).thenReturn(mockSession);
+        when(mockSession.getSessionID()).thenReturn(sessionID);
+        
         WriteFuture mockWriteFuture = mock(WriteFuture.class);
         when(mockIoSession.write("abcd")).thenReturn(mockWriteFuture);
         doThrow(new RuntimeException("TEST")).when(mockWriteFuture).awaitUninterruptibly(timeout);
@@ -84,6 +112,7 @@ public class IoSessionResponderTest {
         boolean result = responder.send("abcd");
 
         assertFalse(result);
+        verify(mockIoSession).getAttribute(SessionConnector.QF_SESSION);
         verify(mockIoSession).write("abcd");
         verify(mockWriteFuture).awaitUninterruptibly(timeout);
         verifyNoMoreInteractions(mockWriteFuture);
@@ -94,6 +123,11 @@ public class IoSessionResponderTest {
     public void testSynchronousSendWithJoinTimeout() throws Exception {
         int timeout = 123;
         IoSession mockIoSession = mock(IoSession.class);
+        Session mockSession = mock(Session.class);
+        Log log = mock(Log.class);
+        when(mockIoSession.getAttribute(SessionConnector.QF_SESSION)).thenReturn(mockSession);
+        when(mockSession.getSessionID()).thenReturn(sessionID);
+        when(mockSession.getLog()).thenReturn(log);
 
         WriteFuture mockWriteFuture = mock(WriteFuture.class);
         when(mockIoSession.write("abcd")).thenReturn(mockWriteFuture);
@@ -103,6 +137,7 @@ public class IoSessionResponderTest {
         boolean result = responder.send("abcd");
 
         assertFalse(result);
+        verify(mockIoSession).getAttribute(SessionConnector.QF_SESSION);
         verify(mockIoSession).write("abcd");
         verify(mockWriteFuture).awaitUninterruptibly(timeout);
         verifyNoMoreInteractions(mockWriteFuture);
